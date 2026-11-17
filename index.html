@@ -9,7 +9,21 @@
 #map .leaflet-tile { max-width:none !important; max-height:none !important; width:256px; height:256px; }
 #map .leaflet-control-container button { width:auto; }
 @media(max-width:600px) { #map {height:350px !important;} }
-</style><link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoakY+3i9e+mrQmA=" crossorigin=""><style>
+</style><link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"><style>
+/* Leaflet 핵심 레이아웃 보강: 외부 스타일시트 차단 시에도 타일 위치 유지 */
+#map.leaflet-container { overflow:hidden; position:relative; background:#ddd; }
+#map .leaflet-pane, #map .leaflet-map-pane, #map .leaflet-tile-pane,
+#map .leaflet-overlay-pane, #map .leaflet-shadow-pane, #map .leaflet-marker-pane,
+#map .leaflet-tooltip-pane, #map .leaflet-popup-pane { position:absolute; left:0; top:0; }
+#map .leaflet-tile, #map .leaflet-marker-icon, #map .leaflet-marker-shadow { position:absolute; left:0; top:0; }
+#map .leaflet-tile-container { position:absolute; left:0; top:0; white-space:nowrap; }
+#map .leaflet-control-container .leaflet-top { position:absolute; top:0; z-index:1000; }
+#map .leaflet-control-container .leaflet-left { left:0; }
+#map .leaflet-control-container .leaflet-bottom { position:absolute; bottom:0; z-index:1000; }
+#map .leaflet-control-container .leaflet-right { right:0; }
+#map .leaflet-control { position:relative; z-index:800; }
+#map .leaflet-control-zoom a { display:block; width:30px; height:30px; text-align:center; line-height:30px; background:#fff; color:#222; text-decoration:none; }
+#map .leaflet-control-attribution { background:rgba(255,255,255,.8); font-size:11px; }
 /* Leaflet 지도 잘림/타일 크기 충돌 방지 */
 #map { display:block; position:relative; width:100%; height:440px; min-width:0; overflow:hidden; }
 #map.leaflet-container { width:100%; }
