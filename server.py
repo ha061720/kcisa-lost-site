@@ -131,6 +131,39 @@ def add_post():
         con.commit()
     return jsonify(id=uid),201
 
+@app.route('/api/posts/<uid>',methods=['PUT'])
+@db_route
+def edit_post(uid):
+    d=request.get_json(silent=True) or {}
+    password=str(d.get('password',''))
+    with connect() as con:
+        row=con.execute(sql('SELECT secret_salt,secret_hash FROM posts WHERE id=?'),(uid,)).fetchone()
+        if not row:return jsonify(error='게시글이 없습니다.'),404
+        candidate=hashlib.pbkdf2_hmac('sha256',password.encode(),bytes.fromhex(row[0]),210000).hex()
+        if not hmac.compare_digest(candidate,row[1]):return jsonify(error='비밀번호가 다릅니다.'),403
+        kind=str(d.get('kind','')).strip()
+        category=str(d.get('category','')).strip()
+        if kind not in ('분실','습득') or category not in CATEGORIES or (category=='미아' and kind!='분실'):
+            return jsonify(error='게시물 종류 또는 카테고리를 확인하세요.'),400
+        vals={k:str(d.get(k,'')).strip() for k in ('title','place','region','detail','event_date')}
+        if not vals['title'] or not vals['place'] or not vals['region']:return jsonify(error='제목, 지역, 장소는 필수입니다.'),400
+        if any(len(vals[k])>n for k,n in [('title',100),('place',120),('region',80),('detail',1000)]):return jsonify(error='입력 글자 수를 줄여주세요.'),400
+        try:
+            if vals['event_date']:datetime.strptime(vals['event_date'],'%Y-%m-%d')
+            lat=float(d['lat']) if d.get('lat') is not None else None
+            lng=float(d['lng']) if d.get('lng') is not None else None
+            if (lat is None)!=(lng is None) or (lat is not None and not (-90<=lat<=90 and -180<=lng<=180)):raise ValueError()
+        except (ValueError,TypeError):return jsonify(error='날짜 또는 좌표를 확인하세요.'),400
+        photo=d.get('photo') or None
+        if photo is not None and (not isinstance(photo,str) or len(photo)>300000 or not re.fullmatch(r'data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}',photo)):
+            return jsonify(error='사진 형식 또는 크기가 올바르지 않습니다.'),400
+        concert_id=str(d.get('concert_id','')).strip()[:100]
+        if concert_id and not valid_concert_id(concert_id):return jsonify(error='선택한 공연을 찾을 수 없습니다.'),400
+        con.execute(sql('UPDATE posts SET kind=?,title=?,category=?,place=?,region=?,detail=?,event_date=?,lat=?,lng=?,photo=?,concert_id=? WHERE id=?'),
+            (kind,vals['title'],category,vals['place'],vals['region'],vals['detail'],vals['event_date'],lat,lng,photo,concert_id,uid))
+        con.commit()
+    return jsonify(ok=True,id=uid)
+
 @app.route('/api/posts/<uid>',methods=['DELETE'])
 @db_route
 def delete_post(uid):
