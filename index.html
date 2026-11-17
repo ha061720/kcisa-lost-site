@@ -2,6 +2,13 @@
 :root{font-family:system-ui,'Malgun Gothic',sans-serif;color:#17223b;background:#f5f7fb}*{box-sizing:border-box}body{margin:0}header{background:#142b55;color:white;padding:26px max(20px,calc((100vw - 1100px)/2))}header h1{margin:0;font-size:26px}header p{color:#d1e0fb;margin:8px 0 0}.wrap{max-width:1100px;margin:auto;padding:26px 18px}.hero{background:linear-gradient(125deg,#e4edff,#fefeff);padding:28px;border-radius:22px;margin-bottom:20px}.hero h2{font-size:28px;margin:0 0 10px}.hero p{color:#53627a;line-height:1.7;margin:0}.panel{background:white;border:1px solid #e1e7f1;border-radius:18px;padding:20px;margin-bottom:20px;box-shadow:0 6px 24px #1c315408}.controls{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:12px}label{display:block;font-size:13px;font-weight:700;margin-bottom:6px}input,select,button{font:inherit;border-radius:10px;padding:12px;width:100%}input,select{border:1px solid #d8dfeb;background:white}button{border:0;background:#285fd6;color:white;cursor:pointer;font-weight:700}.actions{display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:16px}.actions button{width:auto}.muted{color:#62718b;font-size:13px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.item{background:white;border:1px solid #e2e8f2;border-radius:16px;padding:19px;box-shadow:0 4px 14px #1c315408}.item h3{margin:10px 0;font-size:19px}.tag{font-size:12px;color:#2459bf;background:#eaf0ff;padding:5px 9px;border-radius:20px;display:inline-block}.item p{font-size:14px;color:#4e5b70;line-height:1.5;margin:8px 0}.item strong{color:#233653}.item button{margin-top:10px;background:#eef3ff;color:#2459bf}.notice{border-left:4px solid #e7a13e;background:#fff8eb;padding:13px 16px;border-radius:8px;color:#77531c;margin:18px 0;font-size:14px;line-height:1.6}dialog{border:0;border-radius:18px;max-width:550px;width:calc(100% - 24px);padding:25px;box-shadow:0 25px 90px #0005}dialog::backdrop{background:#15213999}dialog p{line-height:1.7;overflow-wrap:anywhere}.close{background:#e9eef8;color:#243b60}.status{font-size:13px;color:#61708a}footer{text-align:center;padding:30px;color:#7a879b;font-size:12px}@media(max-width:850px){.controls{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr 1fr}}@media(max-width:550px){.controls,.grid{grid-template-columns:1fr}.hero h2{font-size:23px}.actions{flex-wrap:wrap}}
 
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0}.tabs button{width:auto;background:#e9effb;color:#24457a}.tabs button.active{background:#285fd6;color:white}.hidden{display:none!important}.post-form{display:grid;grid-template-columns:1fr 1fr;gap:12px}.post-form .full{grid-column:1/-1}textarea{width:100%;padding:12px;border:1px solid #d8dfeb;border-radius:10px;font:inherit;min-height:85px}.post-meta{font-size:13px;color:#64748b}#map{height:380px;border-radius:12px;overflow:hidden}.chatlog{min-height:60px;background:#f4f7fd;padding:14px;border-radius:12px;white-space:pre-wrap}.chatbar{display:flex;gap:8px}.chatbar button{width:100px}.chatbar input{flex:1}.smallbtn{background:#eaf0ff;color:#2756a7} @media(max-width:550px){.post-form{grid-template-columns:1fr}.post-form .full{grid-column:auto}}
+
+/* Leaflet map viewport: isolate the map from global responsive styling. */
+#map { width:100% !important; height:440px !important; min-height:320px; position:relative; overflow:hidden; }
+#map .leaflet-pane, #map .leaflet-map-pane, #map .leaflet-tile-pane { position:absolute; }
+#map .leaflet-tile { max-width:none !important; max-height:none !important; width:256px; height:256px; }
+#map .leaflet-control-container button { width:auto; }
+@media(max-width:600px) { #map {height:350px !important;} }
 </style><link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoakY+3i9e+mrQmA=" crossorigin=""><style>
 /* Leaflet 지도 잘림/타일 크기 충돌 방지 */
 #map { display:block; position:relative; width:100%; height:440px; min-width:0; overflow:hidden; }
@@ -33,23 +40,30 @@ function switchTab(tab) {
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   ['official','community','chat','map'].forEach(x => $(x+'Tab').classList.toggle('hidden', x !== tab));
   if (tab === 'map') {
-    requestAnimationFrame(() => {
+    // Wait until the hidden panel has a measurable width before creating Leaflet.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const center = mapObj ? mapObj.getCenter() : null;
+      const zoom = mapObj ? mapObj.getZoom() : 11;
+      if (mapObj) { mapObj.off(); mapObj.remove(); mapObj = null; markers = null; pin = null; }
+      $('map').replaceChildren();
       initMap();
-      resizeMapSafely();
-      setTimeout(resizeMapSafely, 150);
-      setTimeout(resizeMapSafely, 500);
-    });
+      if (mapObj) {
+        if (center) mapObj.setView(center, zoom, {animate:false});
+        if (chosen) pin = L.marker([chosen.lat, chosen.lng]).addTo(mapObj);
+        mapObj.invalidateSize({pan:false, animate:false});
+        setTimeout(() => { if (mapObj) mapObj.invalidateSize({pan:false, animate:false}); }, 250);
+      }
+    }));
   }
 }
-window.addEventListener('resize', resizeMapSafely);
-if (typeof ResizeObserver !== 'undefined') {
-  new ResizeObserver(() => resizeMapSafely()).observe($('map'));
-}
+window.addEventListener('resize', () => {
+  if (mapObj && !$('mapTab').classList.contains('hidden')) mapObj.invalidateSize({pan:false,animate:false});
+});
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 async function loadPosts(){try{let r=await fetch('/api/posts');if(!r.ok)throw Error('게시판을 불러올 수 없습니다.');posts=await r.json();const regions=[...new Set(posts.map(p=>p.region))].sort();const current=$('postRegion').value;$('postRegion').innerHTML='<option value="">전체 지역</option>'+regions.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');$('postRegion').value=regions.includes(current)?current:'';renderPosts();if(mapObj)renderMarkers()}catch(e){$('postResults').textContent=e.message}}
 function renderPosts(){const q=$('postQ').value.toLowerCase(),cat=$('postFilterCategory').value,region=$('postRegion').value;const subset=posts.filter(p=>(!q||[p.title,p.place,p.region,p.detail].join(' ').toLowerCase().includes(q))&&(!cat||p.category===cat)&&(!region||p.region===region));$('postResults').innerHTML=subset.length?subset.map(p=>`<article class="item"><span class="tag">${esc(p.kind)} · ${esc(p.category)}</span><h3>${esc(p.title)}</h3><p>📍 ${esc(p.region)} · ${esc(p.place)}</p><p>📅 ${esc(p.event_date||'날짜 미입력')}</p><p>${esc(p.detail)}</p><p class="post-meta">등록 ${esc(p.created_at.slice(0,10))}</p>${p.lat!=null?`<button class="smallbtn" data-mapid="${esc(p.id)}">지도 보기</button>`:''}<button class="smallbtn" data-delete="${esc(p.id)}">내 게시물 삭제</button></article>`).join(''):'<p>해당하는 게시물이 없습니다.</p>'}
 ['postQ','postFilterCategory','postRegion'].forEach(id=>$(id).addEventListener('input',renderPosts));
-$('postResults').addEventListener('click',async e=>{let del=e.target.closest('[data-delete]');let m=e.target.closest('[data-mapid]');if(m){let p=posts.find(x=>x.id===m.dataset.mapid);switchTab('map');mapObj.setView([p.lat,p.lng],15);return}if(!del)return;const password=prompt('게시물 등록 시 설정한 삭제 비밀번호를 입력하세요.');if(password===null)return;try{const r=await fetch('/api/posts/'+encodeURIComponent(del.dataset.delete),{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});const data=await r.json();if(!r.ok)throw Error(data.error);await loadPosts()}catch(err){alert(err.message)}});
+$('postResults').addEventListener('click',async e=>{let del=e.target.closest('[data-delete]');let m=e.target.closest('[data-mapid]');if(m){let p=posts.find(x=>x.id===m.dataset.mapid);switchTab('map');setTimeout(()=>{if(mapObj)mapObj.setView([p.lat,p.lng],15,{animate:false})},120);return}if(!del)return;const password=prompt('게시물 등록 시 설정한 삭제 비밀번호를 입력하세요.');if(password===null)return;try{const r=await fetch('/api/posts/'+encodeURIComponent(del.dataset.delete),{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})});const data=await r.json();if(!r.ok)throw Error(data.error);await loadPosts()}catch(err){alert(err.message)}});
 $('postForm').onsubmit=async e=>{e.preventDefault();const data=Object.fromEntries(new FormData(e.target).entries());if(chosen){data.lat=chosen.lat;data.lng=chosen.lng}const b=e.target.querySelector('[type=submit]');b.disabled=true;try{let r=await fetch('/api/posts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});let d=await r.json();if(!r.ok)throw Error(d.error);e.target.reset();chosen=null;$('chosenLocation').textContent='위치 미선택';$('postMessage').textContent='게시글이 등록되었습니다.';await loadPosts()}catch(err){$('postMessage').textContent='등록 실패: '+err.message}finally{b.disabled=false}};
 $('clearLocation').onclick=()=>{chosen=null;$('chosenLocation').textContent='위치 미선택';if(pin){pin.remove();pin=null}};
 function initMap(){if(mapObj)return;if(typeof L==='undefined'){$('mapHelp').textContent='지도 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하세요.';return}mapObj=L.map('map').setView([37.52,127.12],11);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors',maxZoom:19}).addTo(mapObj);markers=L.layerGroup().addTo(mapObj);mapObj.on('click',e=>{chosen={lat:e.latlng.lat,lng:e.latlng.lng};$('chosenLocation').textContent=`위치 선택: ${chosen.lat.toFixed(5)}, ${chosen.lng.toFixed(5)}`;$('mapHelp').textContent='위치를 선택했습니다. 게시판 탭에서 글을 등록하세요.';if(pin)pin.remove();pin=L.marker(e.latlng).addTo(mapObj)});renderMarkers()}
