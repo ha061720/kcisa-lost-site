@@ -32,9 +32,12 @@ def setup_db():
         # Add optional image column to existing SQLite/Neon databases without losing posts.
         if DATABASE_URL:
             con.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS photo TEXT')
+            con.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS concert_id TEXT')
         else:
             cols=[row[1] for row in con.execute('PRAGMA table_info(posts)').fetchall()]
             if 'photo' not in cols:con.execute('ALTER TABLE posts ADD COLUMN photo TEXT')
+            if 'concert_id' not in cols:con.execute('ALTER TABLE posts ADD COLUMN concert_id TEXT')
+        con.execute('''CREATE TABLE IF NOT EXISTS concerts (id TEXT PRIMARY KEY, title TEXT NOT NULL, venue TEXT NOT NULL, date TEXT NOT NULL, end_date TEXT NOT NULL, time TEXT, description TEXT, created_at TEXT NOT NULL, secret_salt TEXT NOT NULL, secret_hash TEXT NOT NULL)''')
         con.commit()
 
 def db_route(fn):
@@ -81,7 +84,7 @@ def prune_posts(con):
 
 
 def public_post(row):
-    keys=['id','kind','title','category','place','region','detail','event_date','lat','lng','created_at','photo']
+    keys=['id','kind','title','category','place','region','detail','event_date','lat','lng','created_at','photo','concert_id']
     return dict(zip(keys,row[:len(keys)]))
 
 @app.route('/api/posts',methods=['GET'])
@@ -90,7 +93,7 @@ def list_posts():
     with connect() as con:
         prune_posts(con)
         con.commit()
-        rows=con.execute('SELECT id,kind,title,category,place,region,detail,event_date,lat,lng,created_at,photo FROM posts ORDER BY created_at DESC, id DESC LIMIT 500').fetchall()
+        rows=con.execute('SELECT id,kind,title,category,place,region,detail,event_date,lat,lng,created_at,photo,concert_id FROM posts ORDER BY created_at DESC, id DESC LIMIT 500').fetchall()
     return jsonify([public_post(r) for r in rows])
 
 @app.route('/api/posts',methods=['POST'])
@@ -116,12 +119,14 @@ def add_post():
     if photo is not None:
         if not isinstance(photo,str) or len(photo)>300000 or not re.fullmatch(r'data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}',photo):
             return jsonify(error='사진 형식이 올바르지 않거나 너무 큽니다.'),400
+    concert_id=str(d.get('concert_id','')).strip()[:100]
+    if concert_id and not valid_concert_id(concert_id):return jsonify(error='선택한 공연을 찾을 수 없습니다.'),400
     salt=secrets.token_hex(16)
     hashed=hashlib.pbkdf2_hmac('sha256',fields['password'].encode(),bytes.fromhex(salt),210000).hex()
     uid=secrets.token_hex(12)
-    values=(uid,kind,fields['title'],category,fields['place'],fields['region'],fields['detail'],date,lat,lng,datetime.now(timezone.utc).isoformat(),salt,hashed,photo)
+    values=(uid,kind,fields['title'],category,fields['place'],fields['region'],fields['detail'],date,lat,lng,datetime.now(timezone.utc).isoformat(),salt,hashed,photo,concert_id)
     with connect() as con:
-        con.execute(sql('INSERT INTO posts (id,kind,title,category,place,region,detail,event_date,lat,lng,created_at,secret_salt,secret_hash,photo) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'),values)
+        con.execute(sql('INSERT INTO posts (id,kind,title,category,place,region,detail,event_date,lat,lng,created_at,secret_salt,secret_hash,photo,concert_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'),values)
         prune_posts(con)
         con.commit()
     return jsonify(id=uid),201
@@ -137,6 +142,59 @@ def delete_post(uid):
         candidate=hashlib.pbkdf2_hmac('sha256',password.encode(),bytes.fromhex(row[0]),210000).hex()
         if not hmac.compare_digest(candidate,row[1]):return jsonify(error='삭제 비밀번호가 다릅니다.'),403
         con.execute(sql('DELETE FROM posts WHERE id=?'),(uid,))
+        con.commit()
+    return jsonify(ok=True)
+
+
+def official_concerts():
+    try:return json.loads((BASE/'events.json').read_text(encoding='utf-8')).get('events',[])
+    except Exception:return []
+
+def valid_concert_id(uid):
+    if any(str(x.get('id'))==uid for x in official_concerts()):return True
+    with connect() as con:
+        return con.execute(sql('SELECT 1 FROM concerts WHERE id=?'),(uid,)).fetchone() is not None
+
+@app.route('/api/concerts',methods=['GET'])
+@db_route
+def list_concerts():
+    with connect() as con:
+        rows=con.execute('SELECT id,title,venue,date,end_date,time,description,created_at FROM concerts ORDER BY date DESC, created_at DESC LIMIT 200').fetchall()
+    return jsonify([dict(id=r[0],title=r[1],venue=r[2],date=r[3],end_date=r[4],time=r[5],description=r[6],created_at=r[7],source='사용자 등록 (미검증)',verified=False) for r in rows])
+
+@app.route('/api/concerts',methods=['POST'])
+@db_route
+def add_concert():
+    d=request.get_json(silent=True) or {}
+    fields={k:str(d.get(k,'')).strip() for k in ['title','venue','date','end_date','time','description','password']}
+    if not all(fields[k] for k in ['title','venue','date','password']):return jsonify(error='공연명, 공연장, 시작일, 삭제 비밀번호를 입력하세요.'),400
+    if len(fields['password'])<6:return jsonify(error='비밀번호는 6자 이상이어야 합니다.'),400
+    for k,n in [('title',120),('venue',100),('time',120),('description',700),('password',100)]:
+        if len(fields[k])>n:return jsonify(error='입력 길이를 줄여주세요.'),400
+    try:
+        start=datetime.strptime(fields['date'],'%Y-%m-%d').date()
+        end=datetime.strptime(fields['end_date'] or fields['date'],'%Y-%m-%d').date()
+        if end<start:return jsonify(error='종료일은 시작일보다 빠를 수 없습니다.'),400
+    except ValueError:return jsonify(error='공연 날짜가 올바르지 않습니다.'),400
+    uid='user-'+secrets.token_hex(10)
+    salt=secrets.token_hex(16)
+    hashed=hashlib.pbkdf2_hmac('sha256',fields['password'].encode(),bytes.fromhex(salt),210000).hex()
+    with connect() as con:
+        con.execute(sql('INSERT INTO concerts (id,title,venue,date,end_date,time,description,created_at,secret_salt,secret_hash) VALUES (?,?,?,?,?,?,?,?,?,?)'),(uid,fields['title'],fields['venue'],fields['date'],fields['end_date'] or fields['date'],fields['time'],fields['description'],datetime.now(timezone.utc).isoformat(),salt,hashed))
+        con.commit()
+    return jsonify(id=uid),201
+
+@app.route('/api/concerts/<uid>',methods=['DELETE'])
+@db_route
+def delete_concert(uid):
+    d=request.get_json(silent=True) or {}
+    with connect() as con:
+        row=con.execute(sql('SELECT secret_salt,secret_hash FROM concerts WHERE id=?'),(uid,)).fetchone()
+        if not row:return jsonify(error='공연 게시물이 없습니다.'),404
+        candidate=hashlib.pbkdf2_hmac('sha256',str(d.get('password','')).encode(),bytes.fromhex(row[0]),210000).hex()
+        if not hmac.compare_digest(candidate,row[1]):return jsonify(error='삭제 비밀번호가 다릅니다.'),403
+        # Retain references in lost-property posts as text IDs; no cascading delete of posts.
+        con.execute(sql('DELETE FROM concerts WHERE id=?'),(uid,))
         con.commit()
     return jsonify(ok=True)
 
