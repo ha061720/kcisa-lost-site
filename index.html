@@ -16,7 +16,25 @@ $('refresh').hidden=true; $('refresh').onclick=async()=>{const b=$('refresh');b.
 
 const cats=['지갑','휴대전화','가방','전자기기','의류','열쇠','귀금속','서류','기타'];let posts=[],chosen=null,mapObj=null,markers=null,pin=null;
 $('postCategory').innerHTML=cats.map(c=>`<option>${esc(c)}</option>`).join('');$('postFilterCategory').innerHTML+='<option>'+cats.join('</option><option>')+'</option>';
-function switchTab(tab){document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));['official','community','chat','map'].forEach(x=>$(x+'Tab').classList.toggle('hidden',x!==tab));if(tab==='map')setTimeout(()=>{initMap();mapObj.invalidateSize()},50)}
+function switchTab(tab){document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));['official','community','chat','map'].forEach(x=>$(x+'Tab').classList.toggle('hidden',x!==tab));if (tab === 'map') {
+  setTimeout(() => {
+    initMap();
+
+    if (mapObj) {
+      mapObj.invalidateSize({
+        pan: false,
+        animate: false
+      });
+
+      setTimeout(() => {
+        mapObj.invalidateSize({
+          pan: false,
+          animate: false
+        });
+      }, 300);
+    }
+  }, 200);
+}
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 async function loadPosts(){try{let r=await fetch('/api/posts');if(!r.ok)throw Error('게시판을 불러올 수 없습니다.');posts=await r.json();const regions=[...new Set(posts.map(p=>p.region))].sort();const current=$('postRegion').value;$('postRegion').innerHTML='<option value="">전체 지역</option>'+regions.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');$('postRegion').value=regions.includes(current)?current:'';renderPosts();if(mapObj)renderMarkers()}catch(e){$('postResults').textContent=e.message}}
 function renderPosts(){const q=$('postQ').value.toLowerCase(),cat=$('postFilterCategory').value,region=$('postRegion').value;const subset=posts.filter(p=>(!q||[p.title,p.place,p.region,p.detail].join(' ').toLowerCase().includes(q))&&(!cat||p.category===cat)&&(!region||p.region===region));$('postResults').innerHTML=subset.length?subset.map(p=>`<article class="item"><span class="tag">${esc(p.kind)} · ${esc(p.category)}</span><h3>${esc(p.title)}</h3><p>📍 ${esc(p.region)} · ${esc(p.place)}</p><p>📅 ${esc(p.event_date||'날짜 미입력')}</p><p>${esc(p.detail)}</p><p class="post-meta">등록 ${esc(p.created_at.slice(0,10))}</p>${p.lat!=null?`<button class="smallbtn" data-mapid="${esc(p.id)}">지도 보기</button>`:''}<button class="smallbtn" data-delete="${esc(p.id)}">내 게시물 삭제</button></article>`).join(''):'<p>해당하는 게시물이 없습니다.</p>'}
