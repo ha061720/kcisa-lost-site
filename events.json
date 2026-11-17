@@ -128,6 +128,20 @@
       "organizer": "㈜스타쉽엔터테인먼트, ㈜쇼노트",
       "contact": "멜론티켓 1899-0042",
       "verified": true
+    },
+    {
+      "id": "roykim-2026",
+      "title": "2026-27 로이킴 LIVE TOUR ［R:O:Y］ in SEOUL",
+      "venue": "KSPO DOME",
+      "date": "2026-11-21",
+      "end_date": "2026-11-22",
+      "time": "11/21 18:00 · 11/22 17:00",
+      "description": "올림픽공원 공식 일정 확인. 조회일 기준 예정 공연입니다.",
+      "source": "올림픽공원 공식 일정",
+      "source_url": "https://www.ksponco.or.kr/olympicpark/eventInfo/eventInfoListText?mid=a20301010200",
+      "organizer": "",
+      "contact": "",
+      "verified": true
     }
   ]
 }
