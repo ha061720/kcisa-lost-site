@@ -7,13 +7,13 @@ from parse_data import extract
 
 BASE=Path(__file__).resolve().parent
 app=Flask(__name__,static_folder=str(BASE),static_url_path='')
-app.config['MAX_CONTENT_LENGTH']=40*1024
+app.config['MAX_CONTENT_LENGTH']=500*1024
 API='https://api.kcisa.kr/openapi/service/rest/meta/KSClost'
 DATABASE_URL=os.getenv('DATABASE_URL','').strip()
 IS_RENDER=bool(os.getenv('RENDER'))
 MAX_POSTS=500
 POST_RETENTION_DAYS=90
-CATEGORIES=['지갑','휴대전화','가방','전자기기','의류','열쇠','귀금속','서류','기타']
+CATEGORIES=['지갑','휴대전화','가방','전자기기','의류','열쇠','귀금속','서류','기타','미아']
 
 def connect():
     if DATABASE_URL:
@@ -29,6 +29,12 @@ def sql(statement):
 def setup_db():
     with connect() as con:
         con.execute('''CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, category TEXT NOT NULL, place TEXT NOT NULL, region TEXT NOT NULL, detail TEXT NOT NULL, event_date TEXT, lat REAL, lng REAL, created_at TEXT NOT NULL, secret_salt TEXT NOT NULL, secret_hash TEXT NOT NULL)''')
+        # Add optional image column to existing SQLite/Neon databases without losing posts.
+        if DATABASE_URL:
+            con.execute('ALTER TABLE posts ADD COLUMN IF NOT EXISTS photo TEXT')
+        else:
+            cols=[row[1] for row in con.execute('PRAGMA table_info(posts)').fetchall()]
+            if 'photo' not in cols:con.execute('ALTER TABLE posts ADD COLUMN photo TEXT')
         con.commit()
 
 def db_route(fn):
@@ -75,7 +81,7 @@ def prune_posts(con):
 
 
 def public_post(row):
-    keys=['id','kind','title','category','place','region','detail','event_date','lat','lng','created_at']
+    keys=['id','kind','title','category','place','region','detail','event_date','lat','lng','created_at','photo']
     return dict(zip(keys,row[:len(keys)]))
 
 @app.route('/api/posts',methods=['GET'])
@@ -84,7 +90,7 @@ def list_posts():
     with connect() as con:
         prune_posts(con)
         con.commit()
-        rows=con.execute('SELECT id,kind,title,category,place,region,detail,event_date,lat,lng,created_at FROM posts ORDER BY created_at DESC, id DESC LIMIT 500').fetchall()
+        rows=con.execute('SELECT id,kind,title,category,place,region,detail,event_date,lat,lng,created_at,photo FROM posts ORDER BY created_at DESC, id DESC LIMIT 500').fetchall()
     return jsonify([public_post(r) for r in rows])
 
 @app.route('/api/posts',methods=['POST'])
@@ -94,7 +100,7 @@ def add_post():
     kind=str(d.get('kind',''))
     if kind not in ['분실','습득']:return jsonify(error='분실 또는 습득을 선택하세요.'),400
     category=str(d.get('category',''))
-    if category not in CATEGORIES:return jsonify(error='올바른 카테고리를 선택하세요.'),400
+    if category not in CATEGORIES or (category=='미아' and kind!='분실'):return jsonify(error='올바른 카테고리를 선택하세요. 미아는 분실 카테고리에서만 선택할 수 있습니다.'),400
     fields={k:str(d.get(k,'')).strip() for k in ['title','place','region','detail','event_date','password']}
     if not fields['title'] or not fields['place'] or not fields['region'] or not fields['password']:return jsonify(error='제목, 장소, 지역, 삭제 비밀번호는 필수입니다.'),400
     if any(len(fields[k])>maxlen for k,maxlen in [('title',100),('place',120),('region',80),('detail',1000),('password',100)]):return jsonify(error='입력 길이를 줄여주세요.'),400
@@ -106,12 +112,16 @@ def add_post():
         lng=float(d['lng']) if d.get('lng') is not None else None
         if (lat is None)!=(lng is None) or (lat is not None and not (-90<=lat<=90 and -180<=lng<=180)):raise ValueError()
     except (ValueError,TypeError):return jsonify(error='날짜 또는 좌표가 올바르지 않습니다.'),400
+    photo=d.get('photo') or None
+    if photo is not None:
+        if not isinstance(photo,str) or len(photo)>300000 or not re.fullmatch(r'data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}',photo):
+            return jsonify(error='사진 형식이 올바르지 않거나 너무 큽니다.'),400
     salt=secrets.token_hex(16)
     hashed=hashlib.pbkdf2_hmac('sha256',fields['password'].encode(),bytes.fromhex(salt),210000).hex()
     uid=secrets.token_hex(12)
-    values=(uid,kind,fields['title'],category,fields['place'],fields['region'],fields['detail'],date,lat,lng,datetime.now(timezone.utc).isoformat(),salt,hashed)
+    values=(uid,kind,fields['title'],category,fields['place'],fields['region'],fields['detail'],date,lat,lng,datetime.now(timezone.utc).isoformat(),salt,hashed,photo)
     with connect() as con:
-        con.execute(sql('INSERT INTO posts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)'),values)
+        con.execute(sql('INSERT INTO posts (id,kind,title,category,place,region,detail,event_date,lat,lng,created_at,secret_salt,secret_hash,photo) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'),values)
         prune_posts(con)
         con.commit()
     return jsonify(id=uid),201
