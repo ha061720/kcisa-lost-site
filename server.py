@@ -326,7 +326,7 @@ def chat():
     d=request.get_json(silent=True) or {}
     message=str(d.get('message','')).strip()[:500]
     if not message:return jsonify(error='메시지를 입력하세요.'),400
-    terms=[]; ai=False; ai_error=False
+    terms=[]; ai=False; ai_error=False; ai_error_code=None
     gemini_key=os.getenv('GEMINI_API_KEY','').strip()
     openai_key=os.getenv('OPENAI_API_KEY','').strip()
     provider='gemini' if gemini_key else ('openai' if openai_key else 'none')
@@ -350,9 +350,23 @@ def chat():
             terms=[t.strip() for t in content.replace('\n',',').split(',') if t.strip()][:5]
             ai=bool(terms)
             if not ai:raise ValueError('Gemini returned no keywords')
+        except requests.exceptions.HTTPError as exc:
+            ai_error=True
+            status=exc.response.status_code if exc.response is not None else None
+            ai_error_code=str(status) if status is not None else 'HTTP_ERROR'
+            # Never log raw API response, URL, headers, or credentials.
+            app.logger.warning('Gemini API request failed: HTTP %s',ai_error_code)
+        except requests.exceptions.Timeout:
+            ai_error=True
+            ai_error_code='TIMEOUT'
+            app.logger.warning('Gemini API request failed: TIMEOUT')
+        except requests.exceptions.RequestException as exc:
+            ai_error=True
+            ai_error_code='NETWORK_ERROR'
+            app.logger.warning('Gemini API request failed: %s',type(exc).__name__)
         except Exception as exc:
             ai_error=True
-            # Avoid logging request headers or raw API response, which may contain secrets.
+            ai_error_code='RESPONSE_ERROR'
             app.logger.warning('Gemini keyword extraction failed: %s',type(exc).__name__)
     elif openai_key:
         try:
@@ -383,7 +397,11 @@ def chat():
             if candidate in stop or len(candidate)<2:continue
             if candidate not in terms:terms.append(candidate)
         terms=terms[:8]
-    return jsonify(terms=terms,ai=ai,ai_configured=bool(gemini_key or openai_key),ai_error=ai_error,provider=provider,reply=('AI가 추출한' if ai else '문장에서 찾은')+' 검색어: '+(', '.join(terms) if terms else '검색어를 찾지 못했어요. 물품명과 장소를 적어주세요.')+' · 아래 검색 결과를 확인하세요.')
+    reply=('AI가 추출한' if ai else '문장에서 찾은')+' 검색어: '+(', '.join(terms) if terms else '검색어를 찾지 못했어요. 물품명과 장소를 적어주세요.')+' · 아래 검색 결과를 확인하세요.'
+    if ai_error and provider=='gemini':
+        explanations={'400':'요청 형식을 확인해야 합니다','401':'API 키 인증을 확인하세요','403':'API 키 권한을 확인하세요','404':'모델 이름 또는 접근 권한을 확인하세요','429':'무료 할당량 또는 요청 제한을 확인하세요','500':'Gemini 서버 오류입니다','503':'Gemini 서버가 일시적으로 사용 불가합니다','TIMEOUT':'응답 시간이 초과되었습니다','NETWORK_ERROR':'네트워크 연결을 확인하세요','RESPONSE_ERROR':'AI 응답 처리에 실패했습니다'}
+        reply+=' (Gemini 오류 '+str(ai_error_code or 'UNKNOWN')+': '+explanations.get(ai_error_code,'Render 로그를 확인하세요')+'; 기본 검색 사용)'
+    return jsonify(terms=terms,ai=ai,ai_configured=bool(gemini_key or openai_key),ai_error=ai_error,ai_error_code=ai_error_code,provider=provider,reply=reply)
 
 if __name__=='__main__':
     app.run(host='127.0.0.1',port=5000,debug=False)
