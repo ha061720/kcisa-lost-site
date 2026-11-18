@@ -312,25 +312,62 @@ def tracking_search():
 
 @app.route('/api/ai/status')
 def ai_status():
-    return jsonify(configured=bool(os.getenv('OPENAI_API_KEY','').strip()), model=os.getenv('OPENAI_MODEL','gpt-4o-mini'), note='API 키가 설정되어도 요금·권한·네트워크 문제로 호출이 실패할 수 있습니다.')
+    gemini=bool(os.getenv('GEMINI_API_KEY','').strip())
+    openai=bool(os.getenv('OPENAI_API_KEY','').strip())
+    # Gemini takes priority; do not expose API keys or provider errors here.
+    provider='gemini' if gemini else ('openai' if openai else 'none')
+    model=(os.getenv('GEMINI_MODEL','gemini-2.5-flash') if gemini
+           else os.getenv('OPENAI_MODEL','gpt-4o-mini') if openai else None)
+    return jsonify(configured=gemini or openai,provider=provider,model=model,
+                   note='설정 상태만 표시합니다. 실제 AI 호출 성공 여부는 챗봇에서 확인하세요.')
 
 @app.route('/api/chat',methods=['POST'])
 def chat():
     d=request.get_json(silent=True) or {}
     message=str(d.get('message','')).strip()[:500]
     if not message:return jsonify(error='메시지를 입력하세요.'),400
-    # Optional real LLM query expansion, never pass personal post data to third party.
     terms=[]; ai=False; ai_error=False
-    key=os.getenv('OPENAI_API_KEY','').strip()
-    if key:
+    gemini_key=os.getenv('GEMINI_API_KEY','').strip()
+    openai_key=os.getenv('OPENAI_API_KEY','').strip()
+    provider='gemini' if gemini_key else ('openai' if openai_key else 'none')
+    instruction='한국어 유실물 검색어 추출기입니다. 입력 문장에서 물품명, 장소, 색상 등 검색에 유용한 키워드 1~5개만 쉼표로 구분하여 출력하세요. 설명, 마크다운, 개인정보는 출력하지 마세요.'
+    if gemini_key:
         try:
-            r=requests.post('https://api.openai.com/v1/chat/completions',headers={'Authorization':'Bearer '+key},json={'model':os.getenv('OPENAI_MODEL','gpt-4o-mini'),'messages':[{'role':'system','content':'한국어 유실물 검색어 추출기. 사용자 문장에서 물품명, 장소, 색상 등 검색 키워드 1~5개만 쉼표로 구분하여 출력. 추가 설명 금지.'},{'role':'user','content':message}],'max_tokens':100,'temperature':0},timeout=12)
+            model=os.getenv('GEMINI_MODEL','gemini-2.5-flash').strip() or 'gemini-2.5-flash'
+            if not re.fullmatch(r'[A-Za-z0-9._-]+',model):
+                raise ValueError('Invalid Gemini model name')
+            r=requests.post(
+                'https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent',
+                headers={'x-goog-api-key':gemini_key,'Content-Type':'application/json'},
+                json={'systemInstruction':{'parts':[{'text':instruction}]},
+                      'contents':[{'role':'user','parts':[{'text':message}]}],
+                      'generationConfig':{'maxOutputTokens':160,'temperature':0}},
+                timeout=15)
+            r.raise_for_status()
+            candidates=r.json().get('candidates') or []
+            parts=candidates[0].get('content',{}).get('parts',[]) if candidates else []
+            content=' '.join(str(part.get('text','')) for part in parts)
+            terms=[t.strip() for t in content.replace('\n',',').split(',') if t.strip()][:5]
+            ai=bool(terms)
+            if not ai:raise ValueError('Gemini returned no keywords')
+        except Exception as exc:
+            ai_error=True
+            # Avoid logging request headers or raw API response, which may contain secrets.
+            app.logger.warning('Gemini keyword extraction failed: %s',type(exc).__name__)
+    elif openai_key:
+        try:
+            r=requests.post('https://api.openai.com/v1/chat/completions',
+                headers={'Authorization':'Bearer '+openai_key},
+                json={'model':os.getenv('OPENAI_MODEL','gpt-4o-mini'),
+                      'messages':[{'role':'system','content':instruction},{'role':'user','content':message}],
+                      'max_tokens':100,'temperature':0},timeout=12)
             r.raise_for_status()
             terms=[t.strip() for t in r.json()['choices'][0]['message']['content'].split(',') if t.strip()][:5]
-            ai=True
-        except Exception:
+            ai=bool(terms)
+            if not ai:raise ValueError('OpenAI returned no keywords')
+        except Exception as exc:
             ai_error=True
-            app.logger.warning('OpenAI chat request failed',exc_info=True)
+            app.logger.warning('OpenAI keyword extraction failed: %s',type(exc).__name__)
     if not terms:
         stop={'어제','오늘','제가','나는','저는','잃어버렸어','잃어버렸어요','찾아줘','찾고','싶어요','분실했어요','분실','습득','물건','혹시','있나요','어디','근처','에서','했는데','했어요','거기','좀','찾아','주세요'}
         words=re.findall(r'[가-힣A-Za-z0-9]+',message)
@@ -346,7 +383,7 @@ def chat():
             if candidate in stop or len(candidate)<2:continue
             if candidate not in terms:terms.append(candidate)
         terms=terms[:8]
-    return jsonify(terms=terms,ai=ai,ai_configured=bool(key),ai_error=ai_error,reply=('AI가 추출한' if ai else '문장에서 찾은')+' 검색어: '+(', '.join(terms) if terms else '검색어를 찾지 못했어요. 물품명과 장소를 적어주세요.')+' · 아래 검색 결과를 확인하세요.')
+    return jsonify(terms=terms,ai=ai,ai_configured=bool(gemini_key or openai_key),ai_error=ai_error,provider=provider,reply=('AI가 추출한' if ai else '문장에서 찾은')+' 검색어: '+(', '.join(terms) if terms else '검색어를 찾지 못했어요. 물품명과 장소를 적어주세요.')+' · 아래 검색 결과를 확인하세요.')
 
 if __name__=='__main__':
     app.run(host='127.0.0.1',port=5000,debug=False)
