@@ -321,6 +321,58 @@ def ai_status():
     return jsonify(configured=gemini or openai,provider=provider,model=model,
                    note='설정 상태만 표시합니다. 실제 AI 호출 성공 여부는 챗봇에서 확인하세요.')
 
+def gemini_available_models(api_key):
+    """Query model names supported by this key; never expose credentials."""
+    response=requests.get(
+        'https://generativelanguage.googleapis.com/v1beta/models',
+        headers={'x-goog-api-key':api_key}, timeout=12)
+    response.raise_for_status()
+    models=[]
+    for item in response.json().get('models',[]):
+        name=str(item.get('name',''))
+        methods=item.get('supportedGenerationMethods') or []
+        if name.startswith('models/') and 'generateContent' in methods:
+            models.append(name.removeprefix('models/'))
+    return models
+
+
+def gemini_generate(api_key, model, instruction, message):
+    if not re.fullmatch(r'[A-Za-z0-9._-]+',model):
+        raise ValueError('Invalid Gemini model name')
+    response=requests.post(
+        'https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent',
+        headers={'x-goog-api-key':api_key,'Content-Type':'application/json'},
+        json={'systemInstruction':{'parts':[{'text':instruction}]},
+              'contents':[{'role':'user','parts':[{'text':message}]}],
+              'generationConfig':{'maxOutputTokens':160,'temperature':0}},
+        timeout=20)
+    response.raise_for_status()
+    candidates=response.json().get('candidates') or []
+    parts=candidates[0].get('content',{}).get('parts',[]) if candidates else []
+    content=' '.join(str(part.get('text','')) for part in parts)
+    terms=[t.strip() for t in content.replace('\n',',').split(',') if t.strip()][:5]
+    if not terms:raise ValueError('Gemini returned no keywords')
+    return terms
+
+
+@app.route('/api/ai/models')
+def ai_models():
+    """Safe diagnostics: supported model names only, never API key or raw response."""
+    api_key=os.getenv('GEMINI_API_KEY','').strip()
+    if not api_key:return jsonify(configured=False,error='GEMINI_API_KEY가 없습니다.'),503
+    try:
+        models=gemini_available_models(api_key)
+        return jsonify(configured=True,models=models,model_count=len(models))
+    except requests.exceptions.HTTPError as exc:
+        code=exc.response.status_code if exc.response is not None else None
+        return jsonify(configured=True,error='Gemini 모델 목록 조회 실패',status_code=code),502
+    except requests.exceptions.RequestException:
+        return jsonify(configured=True,error='Gemini 모델 목록 연결 실패'),502
+    except Exception:
+        app.logger.exception('Gemini model list processing failed')
+        return jsonify(configured=True,error='Gemini 모델 목록 처리 실패'),502
+
+
 @app.route('/api/chat',methods=['POST'])
 def chat():
     d=request.get_json(silent=True) or {}
@@ -334,27 +386,28 @@ def chat():
     if gemini_key:
         try:
             model=os.getenv('GEMINI_MODEL','gemini-2.5-flash').strip() or 'gemini-2.5-flash'
-            if not re.fullmatch(r'[A-Za-z0-9._-]+',model):
-                raise ValueError('Invalid Gemini model name')
-            r=requests.post(
-                'https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent',
-                headers={'x-goog-api-key':gemini_key,'Content-Type':'application/json'},
-                json={'systemInstruction':{'parts':[{'text':instruction}]},
-                      'contents':[{'role':'user','parts':[{'text':message}]}],
-                      'generationConfig':{'maxOutputTokens':160,'temperature':0}},
-                timeout=15)
-            r.raise_for_status()
-            candidates=r.json().get('candidates') or []
-            parts=candidates[0].get('content',{}).get('parts',[]) if candidates else []
-            content=' '.join(str(part.get('text','')) for part in parts)
-            terms=[t.strip() for t in content.replace('\n',',').split(',') if t.strip()][:5]
+            try:
+                terms=gemini_generate(gemini_key,model,instruction,message)
+            except requests.exceptions.HTTPError as first_error:
+                code=first_error.response.status_code if first_error.response is not None else None
+                if code!=404:raise
+                # Model availability is key/project dependent. Retry once only after a 404.
+                available=gemini_available_models(gemini_key)
+                preferred=['gemini-2.5-flash','gemini-2.5-flash-lite','gemini-2.0-flash']
+                alternatives=[m for m in preferred if m in available and m!=model]
+                if not alternatives:
+                    alternatives=[m for m in available if 'flash' in m.lower() and m!=model and 'preview' not in m.lower()]
+                if not alternatives:
+                    app.logger.warning('Gemini model unavailable (404); no alternative Flash model for this key')
+                    raise
+                fallback=alternatives[0]
+                app.logger.warning('Gemini model %s returned 404; retrying available model %s',model,fallback)
+                terms=gemini_generate(gemini_key,fallback,instruction,message)
             ai=bool(terms)
-            if not ai:raise ValueError('Gemini returned no keywords')
         except requests.exceptions.HTTPError as exc:
             ai_error=True
             status=exc.response.status_code if exc.response is not None else None
             ai_error_code=str(status) if status is not None else 'HTTP_ERROR'
-            # Never log raw API response, URL, headers, or credentials.
             app.logger.warning('Gemini API request failed: HTTP %s',ai_error_code)
         except requests.exceptions.Timeout:
             ai_error=True
